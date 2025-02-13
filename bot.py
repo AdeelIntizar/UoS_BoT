@@ -110,7 +110,7 @@ def parse_markdown_line_by_line(file_path,model,tokenizer):
                 content = line[4:].strip()
                 temp_heading_list.append(content)
                 temp_paragraphs_list.append(content)
-                in_table = False  # Reset table flag when a new heading starts
+                in_table = False  
 
             elif "|" in line and not in_table:
                 headers = [col.strip() for col in line.split("|") if col]
