@@ -1,5 +1,6 @@
 import pandas as pd
 import torch
+import time
 import requests
 from openai import OpenAI
 import os
@@ -29,7 +30,7 @@ origins = [
 ]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -72,6 +73,47 @@ def chunks_and_embeddings(main_heading_list, para_table_list, model, tokenizer):
                     all_details = "".join(main)
                     metadata_list.append(all_details)
     return chunks_data, embedding_list, metadata_list
+
+
+def get_response_from_perplexity(question):
+    api_key=os.getenv("perplexity_api")
+    url = "https://api.perplexity.ai/chat/completions"
+
+    payload = {
+        "model": "sonar-pro",
+        "messages": [
+            {
+                "role": "system",
+                "content": "Be precise and concise."
+            },
+            {
+                "role": "user",
+                "content": question
+            }
+        ],
+        "max_tokens": 123,
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "search_domain_filter": None,
+        "return_images": False,
+        "return_related_questions": False,
+        "top_k": 10,
+        "stream": False,
+        "presence_penalty": 0,
+        "frequency_penalty": 0.5,
+        "response_format": None
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    data = response.json()
+    return data["choices"][0]["message"]["content"],data.get("citations", [])
+
 def parse_markdown_line_by_line(file_path,model,tokenizer):
     main_heading_list=[]
     paragraphs_list=[]
@@ -86,7 +128,6 @@ def parse_markdown_line_by_line(file_path,model,tokenizer):
         return
 
     with open(file_path, 'r', encoding='utf-8') as file:
-        # print("Parsed Markdown Content:\n")
         for index, line in enumerate(file):
             # print(index)
             line = line.strip()
@@ -176,6 +217,29 @@ def get_response(question, context, metadata):
     resp = requests.post(url, json=req_body)
     resp = resp.json()
     return resp['choices'][0]['text']
+def get_response_deep_infra(question, context,metadata):
+    prompt = f"""
+    Answer the following question concisely in 1-3 sentences. Validate the answer and respond only with relevant information.Do not mention context, metadata as reference in response If the answer is unavailable, provide an apology starting with 'Sorry but...' without referencing the source or context.
+
+
+    Question: {question}
+    Context: {context}
+    Metadata : {metadata}
+    Answer:
+    """
+    openai = OpenAI(
+    api_key=os.getenv('deepinfra'),
+    base_url="https://api.deepinfra.com/v1/openai",)
+
+    chat_completion = openai.chat.completions.create(
+    model="meta-llama/Llama-3.3-70B-Instruct",
+    messages=[{"role": "user", "content": prompt}],
+    temperature=0.2,
+    max_tokens=150,
+)
+    return chat_completion.choices[0].message.content
+
+
 def get_response_openai(question, context, metadata):
     prompt = f"""
     Answer the following question concisely in 1-3 sentences. Use only the relevant information from the context and metadata and must not mention context or metadata as reference in response
@@ -204,26 +268,58 @@ def get_response_openai(question, context, metadata):
 def caller_fn(query_question):
     client = Client()
     collection = client.get_or_create_collection("UOS_info")
+    retrieval_time=0
     question_embedding = get_embeddings([query_question], tokenizer, model)
+    retrieval_start_time=time.time()
     results = collection.query(
         query_embeddings=[question_embedding[0].tolist()],
         n_results=50
     )
+    retrieval_end_time=time.time()
+    retrieval_time=retrieval_end_time-retrieval_start_time
     response=""
     openai_response=""
+    perplexity_response=""
+    citation_list=[]
+    llama_time=0
+    openai_time=0
+    perplexity_time=0
     try:
-        response = get_response(query_question,results['documents'],results['metadatas'])
+        llama_start_time=time.time()
+        response = get_response_deep_infra(query_question,results['documents'],results['metadatas'])
+        llama_end_time=time.time()
+        llama_time=llama_end_time-llama_start_time
     except:
         response=""
     try:
+        openai_start_time=time.time()
         openai_response = get_response_openai(query_question,results['documents'],results['metadatas'])
+        openai_end_time=time.time()
+        openai_time=openai_end_time-openai_start_time
     except:
         openai_response=""
+    
+    try:
+        perplexity_start_time=time.time()
+        perplexity_response,citation_list = get_response_from_perplexity(query_question)
+        perplexity_end_time=time.time()
+        perplexity_time=perplexity_end_time-perplexity_start_time
+    except:
+        perplexity_response=""
+        citation_list=[]
+
+
     data={"chunks":results["documents"],
           "metadata":results["metadatas"],
           "similarity":results["distances"],
           "nueralhive_llama_response":response,
-          "Openai_response":openai_response}
+          "Openai_response":openai_response,
+          "perplexity_response":perplexity_response,
+          "perplexity_citations":citation_list,
+          "retrieval_time":retrieval_time,
+          "llama_time":llama_time,
+          "openai_time":openai_time,
+          "perplexity_time":perplexity_time}
     return data
 @app.get("/")
 def read_root(query: str):
