@@ -300,6 +300,8 @@ def caller_fn(query_question):
         openai_response=""
     
     try:
+        if "university of sharjah" not in query_question.lower() or "uos" not in query_question.lower():
+            query_question+=" university of sharjah"
         perplexity_start_time=time.time()
         perplexity_response,citation_list = get_response_from_perplexity(query_question)
         perplexity_end_time=time.time()
