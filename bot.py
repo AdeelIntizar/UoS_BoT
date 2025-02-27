@@ -74,45 +74,108 @@ def chunks_and_embeddings(main_heading_list, para_table_list, model, tokenizer):
                     metadata_list.append(all_details)
     return chunks_data, embedding_list, metadata_list
 
+def chunks_and_embeddings_for_doc(main_heading_list, para_table_list, model, tokenizer):
+    chunks_data = []
+    embedding_list = []
+    metadata_list = []
+    visited_list = []
+    for index,(main, para) in enumerate(zip(main_heading_list, para_table_list)):
+        print("Index : ",index)
+        if index!=38 and index !=39:
 
-def get_response_from_perplexity(question):
-    api_key=os.getenv("perplexity_api")
-    url = "https://api.perplexity.ai/chat/completions"
+            temp_list = []
+            temp_tuple = (main, para)
+            if main and para:
+                if temp_tuple not in visited_list:
+                    visited_list.append(temp_tuple)
+                    chunks = split_text(str(para))
+                    print("Length of chunks : ",len(chunks))
+                    for ind, chunk in enumerate(chunks):
+                        print("Chunk number : ",ind)
+                        all_details = "".join(main)
+                        metadata_list.append(all_details)
+                        chunk_meta=f"{all_details}\n{chunk}"
+                        chunks_data.append(chunk)
+                        embeddings = get_embeddings([chunk], tokenizer, model)
+                        embedding_list.append(embeddings)
+    return chunks_data, embedding_list, metadata_list
 
-    payload = {
-        "model": "sonar-pro",
-        "messages": [
-            {
-                "role": "system",
-                "content": "Be precise and concise."
-            },
-            {
-                "role": "user",
-                "content": question
-            }
-        ],
-        "max_tokens": 123,
-        "temperature": 0.2,
-        "top_p": 0.9,
-        "search_domain_filter": None,
-        "return_images": False,
-        "return_related_questions": False,
-        "top_k": 10,
-        "stream": False,
-        "presence_penalty": 0,
-        "frequency_penalty": 0.5,
-        "response_format": None
-    }
+def parse_markdown_documents(file_path,model,tokenizer):
+    headers = []
+    in_table = False
+    context_list=[]
+    metadata_list=[]
+    temp_context_list=[]
+    temp_metadata_list=[]
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    if not os.path.exists(file_path):
+        print(f"File not found: {file_path}")
+        return
 
-    response = requests.post(url, json=payload, headers=headers)
+    with open(file_path, 'r', encoding='utf-8') as file:
+        # print("Parsed Markdown Content:\n")
+        for index, line in enumerate(file):
+            # print(line)
+            # print(index)
+            line = line.strip()
+            if "Document Name:" in line:
+              if temp_context_list:
+                context_list.append("\n".join(temp_context_list))
+                metadata_list.append("\n".join(temp_metadata_list))
+                temp_context_list=[]
+                temp_metadata_list=[]
+                in_table = False
+              else:
+                temp_context_list.append(line)
+                temp_metadata_list.append(line)
 
-    data = response.json()
-    return data["choices"][0]["message"]["content"],data.get("citations", [])
+            elif line.startswith("# ") and not line.startswith("##"):
+                content = line[2:].strip()
+                temp_context_list.append(content)
+                temp_metadata_list.append(content)
+            elif line.startswith("## ") and not line.startswith("###"):
+                content = line[3:].strip()
+                temp_context_list.append(content)
+                temp_metadata_list.append(content)
+            elif line.startswith("### ") and not line.startswith("####"):
+                content = line[4:].strip()
+                temp_context_list.append(content)
+                temp_metadata_list.append(content)
+
+            elif "|" in line and not in_table:
+                headers = [col.strip() for col in line.split("|") if col]
+                in_table = True
+                skip_flag = True
+
+            elif "|" in line and in_table:
+                row_data = [col.strip() for col in line.split("|") if col]
+                if all("-" in col for col in row_data):
+                    continue
+
+                if len(headers) == len(row_data):
+                    row_dict = {headers[i]: row_data[i] for i in range(len(headers))}
+                    formatted_row = f"({', '.join([f'{key}: {value}' for key, value in row_dict.items()])})"
+                    temp_context_list.append(formatted_row)
+
+            elif in_table and not line.strip():
+                in_table = False
+                headers = []
+
+            else:
+                temp_context_list.append(line)
+        metadata_list.append(" , ".join(temp_metadata_list))
+        context_list.append(" , ".join(temp_context_list))
+        print("Length of headings : ",len(metadata_list))
+        print("Length of paragraphs : ",len(context_list))
+        # for meta,cont in zip(metadata_list,context_list):
+        #   print("Meta : ",meta)
+        #   print("Cont : ",cont)
+        # return chunks_and_embeddings(metadata_list,context_list,model,tokenizer)
+    chunks_data,embedding_list,metadata_list=chunks_and_embeddings_for_doc(metadata_list,context_list,model,tokenizer)
+    return chunks_data,embedding_list,metadata_list
+
+
+
 
 def parse_markdown_line_by_line(file_path,model,tokenizer):
     main_heading_list=[]
@@ -197,6 +260,47 @@ def store_data_in_chromadb(chunks_data, embedding_list, metadata_list, collectio
             print(f"Error adding data for doc_id {doc_id}: {e}")
             continue
     print(f"Data successfully stored in ChromaDB under collection '{collection_name}'.")
+
+
+def get_response_from_perplexity(question):
+    api_key=os.getenv("perplexity_api")
+    url = "https://api.perplexity.ai/chat/completions"
+
+    payload = {
+        "model": "sonar-pro",
+        "messages": [
+            {
+                "role": "system",
+                "content": "Be precise and concise."
+            },
+            {
+                "role": "user",
+                "content": question
+            }
+        ],
+        "max_tokens": 123,
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "search_domain_filter": None,
+        "return_images": False,
+        "return_related_questions": False,
+        "top_k": 10,
+        "stream": False,
+        "presence_penalty": 0,
+        "frequency_penalty": 0.5,
+        "response_format": None
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    data = response.json()
+    return data["choices"][0]["message"]["content"],data.get("citations", [])
+
 def get_response(question, context, metadata):
     prompt = f"""
     Answer the following question concisely in 1-3 sentences. Provide only the relevant information requested, strictly based on the context and metadata provided. Do not include any information beyond the context and metadata.
@@ -217,6 +321,8 @@ def get_response(question, context, metadata):
     resp = requests.post(url, json=req_body)
     resp = resp.json()
     return resp['choices'][0]['text']
+
+
 def get_response_deep_infra(question, context,metadata):
     prompt = f"""
     Answer the following question concisely in 1-3 sentences. Validate the answer and respond only with relevant information.Do not mention context, metadata as reference in response If the answer is unavailable, provide an apology starting with 'Sorry but...' without referencing the source or context.
@@ -243,7 +349,7 @@ def get_response_deep_infra(question, context,metadata):
 def get_response_openai(question, context, metadata):
     prompt = f"""
     Answer the following question concisely in 1-3 sentences. Use only the relevant information from the context and metadata and must not mention context or metadata as reference in response
-    Also validate the answer from metadata and context and if the answer is unavailable then give an apology message(something like you do not have information about that, is there anything else you can help with)
+    Also validate the answer from metadata and context and if the answer is unavailable then give an apology message(provide an apology starting with 'Sorry but..., is there anything else you can help with)
 
     Question: {question}
     Context: {context}
@@ -268,10 +374,15 @@ def get_response_openai(question, context, metadata):
 def caller_fn(query_question):
     client = Client()
     collection = client.get_or_create_collection("UOS_info")
+    collection2 = client.get_or_create_collection("documents_data")
     retrieval_time=0
     question_embedding = get_embeddings([query_question], tokenizer, model)
     retrieval_start_time=time.time()
     results = collection.query(
+        query_embeddings=[question_embedding[0].tolist()],
+        n_results=50
+    )
+    results2 = collection2.query(
         query_embeddings=[question_embedding[0].tolist()],
         n_results=50
     )
@@ -284,18 +395,43 @@ def caller_fn(query_question):
     llama_time=0
     openai_time=0
     perplexity_time=0
+    col_flag=False
+    neural_hive_llama_response=""
+    neuralhive_llama_time=0
     try:
         llama_start_time=time.time()
         response = get_response_deep_infra(query_question,results['documents'],results['metadatas'])
+        if "sorry but" in response.lower():
+            response = get_response_deep_infra(query_question,results2['documents'],results2['metadatas'])
+            col_flag=True
         llama_end_time=time.time()
         llama_time=llama_end_time-llama_start_time
     except:
         response=""
     try:
+        if col_flag:
+            neuralhive_start_time=time.time()
+            neural_hive_llama_response = get_response_deep_infra(query_question,results2['documents'],results2['metadatas'])
+            neuralhive_end_time=time.time()
+            neuralhive_llama_time=neuralhive_end_time-neuralhive_start_time
+        else:
+            neuralhive_start_time=time.time()
+            neural_hive_llama_response = get_response_deep_infra(query_question,results['documents'],results['metadatas'])
+            neuralhive_end_time=time.time()
+            neuralhive_llama_time=neuralhive_end_time-neuralhive_start_time
+
+    except:
+        neural_hive_llama_response=""
+
+    try:
+
         openai_start_time=time.time()
-        openai_response = get_response_openai(query_question,results['documents'],results['metadatas'])
+        openai_response = get_response_openai(query_question,results2['documents'],results2['metadatas'])
+        if "sorry but" in response.lower():
+            openai_response = get_response_openai(query_question,results2['documents'],results2['metadatas'])
         openai_end_time=time.time()
         openai_time=openai_end_time-openai_start_time
+
     except:
         openai_response=""
     
@@ -314,10 +450,12 @@ def caller_fn(query_question):
     data={"chunks":results["documents"],
           "metadata":results["metadatas"],
           "similarity":results["distances"],
-          "nueralhive_llama_response":response,
+          "nueralhive_llama_response":neural_hive_llama_response,
           "Openai_response":openai_response,
           "perplexity_response":perplexity_response,
           "perplexity_citations":citation_list,
+          "llama_deepinfra":response,
+          "neuralhive_llama_time":neuralhive_llama_time,
           "retrieval_time":retrieval_time,
           "llama_time":llama_time,
           "openai_time":openai_time,
@@ -327,11 +465,16 @@ def caller_fn(query_question):
 def read_root(query: str):
     response=caller_fn(query)
     return response
-file_path="D:/scrapper/NUST_data/Univeristy_of_Sharjah2.md"
 tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
 model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+file_path="D:/scrapper/IIUI/University of Sharjah Data1.md"
+doc_file_path="D:/scrapper/documents/All_documents_data1.md"
 chunks_data,embedding_list,metadata_list=parse_markdown_line_by_line(file_path,model,tokenizer)
 store_data_in_chromadb(chunks_data, embedding_list, metadata_list, collection_name="UOS_info")
+
+chunks_data2,embedding_list2,metadata_list2=parse_markdown_documents(doc_file_path,model,tokenizer)
+store_data_in_chromadb(chunks_data2, embedding_list2, metadata_list2, collection_name="documents_data")
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
     
